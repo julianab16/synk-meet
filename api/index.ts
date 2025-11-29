@@ -1,8 +1,10 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import { ExpressPeerServer } from "peer";
 import meetRoutes from "./routes/meet.routes";
-
 /**
  * Main Application Entry Point
  * 
@@ -27,6 +29,7 @@ dotenv.config();
  * @type {express.Application}
  */
 const app = express();
+const server = createServer(app);
 
 /**
  * CORS (Cross-Origin Resource Sharing) configuration.
@@ -90,14 +93,179 @@ app.use("*", (req, res) => {
  */
 const PORT = process.env.PORT || 4000;
 
+
+
+
+
+
+
+
+
+
+/**
+ * Socket.IO server instance for real-time communication.
+ * Handles WebRTC signaling and peer management.
+ */
+const io = new Server(server, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+/**
+ * PeerJS server for WebRTC peer-to-peer connections.
+ * Handles ICE candidate exchange and media streaming.
+ */
+const peerServer = ExpressPeerServer(server, {
+  path: '/peerjs',
+  proxied: true
+});
+
+
+/**
+ * Mount PeerJS server at /peerjs endpoint.
+ * Clients connect to this for WebRTC functionality.
+ */
+app.use('/peerjs', peerServer);
+
+
+/**
+ * Peer management for WebRTC connections.
+ * Stores active peer connections and their metadata.
+ */
+interface PeerInfo {
+  socketId: string;
+  peerId?: string;
+  meetingId?: string;
+  userId?: string;
+  mediaEnabled: {
+    audio: boolean;
+    video: boolean;
+  };
+}
+
+let peers: { [socketId: string]: PeerInfo } = {};
+
+/**
+ * Socket.IO connection handler for real-time signaling.
+ * Manages peer discovery, WebRTC signaling, and media control.
+ */
+io.on("connection", (socket) => {
+  console.log(`📞 Socket connected: ${socket.id}`);
+
+  /**
+   * Handle user joining a meeting room.
+   * Associates socket with meeting and initializes peer info.
+   */
+  socket.on("join-meeting", (data: { meetingId: string; userId: string; peerId: string }) => {
+    const { meetingId, userId, peerId } = data;
+    
+    // Initialize peer info
+    peers[socket.id] = {
+      socketId: socket.id,
+      peerId,
+      meetingId,
+      userId,
+      mediaEnabled: { audio: true, video: false }
+    };
+
+    // Join meeting room
+    socket.join(meetingId);
+    
+    // Notify existing peers about new user
+    socket.to(meetingId).emit("user-joined", {
+      userId,
+      peerId,
+      socketId: socket.id
+    });
+
+    // Send existing peers to new user
+    const meetingPeers = Object.values(peers).filter(p => p.meetingId === meetingId && p.socketId !== socket.id);
+    socket.emit("existing-peers", meetingPeers.map(p => ({
+      userId: p.userId,
+      peerId: p.peerId,
+      socketId: p.socketId,
+      mediaEnabled: p.mediaEnabled
+    })));
+
+    console.log(`🎯 User ${userId} joined meeting ${meetingId} with peer ${peerId}`);
+  });
+
+  /**
+   * Handle WebRTC signaling data exchange.
+   */
+  socket.on("signal", (data: { to: string; from: string; signal: any }) => {
+    const { to, from, signal } = data;
+    socket.to(to).emit("signal", { from, signal });
+  });
+
+  /**
+   * Handle audio toggle (mute/unmute).
+   */
+  socket.on("toggle-audio", (data: { enabled: boolean }) => {
+    if (peers[socket.id]) {
+      peers[socket.id].mediaEnabled.audio = data.enabled;
+      
+      // Notify meeting participants about audio state change
+      if (peers[socket.id].meetingId) {
+        socket.to(peers[socket.id].meetingId!).emit("peer-audio-toggle", {
+          socketId: socket.id,
+          userId: peers[socket.id].userId,
+          audioEnabled: data.enabled
+        });
+      }
+    }
+  });
+
+  /**
+   * Handle video toggle (camera on/off).
+   */
+  socket.on("toggle-video", (data: { enabled: boolean }) => {
+    if (peers[socket.id]) {
+      peers[socket.id].mediaEnabled.video = data.enabled;
+      
+      // Notify meeting participants about video state change
+      if (peers[socket.id].meetingId) {
+        socket.to(peers[socket.id].meetingId!).emit("peer-video-toggle", {
+          socketId: socket.id,
+          userId: peers[socket.id].userId,
+          videoEnabled: data.enabled
+        });
+      }
+    }
+  });
+
+  /**
+   * Handle peer disconnection.
+   */
+  socket.on("disconnect", () => {
+    const peerInfo = peers[socket.id];
+    if (peerInfo) {
+      // Notify meeting participants about user leaving
+      if (peerInfo.meetingId) {
+        socket.to(peerInfo.meetingId).emit("user-left", {
+          socketId: socket.id,
+          userId: peerInfo.userId,
+          peerId: peerInfo.peerId
+        });
+      }
+      
+      delete peers[socket.id];
+      console.log(`📴 User disconnected: ${socket.id}`);
+    }
+  });
+});
+
 /**
  * Start the HTTP server and listen for incoming connections.
  * Logs server startup information to console.
  * 
  * @listens {number} PORT - The port number the server listens on
  */
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Meet service running on port ${PORT}`);
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🌐 CORS enabled for: ${process.env.CORS_ORIGIN || '*'}`);
+  console.log(`🎥 PeerJS server available at /peerjs`);
 });

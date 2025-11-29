@@ -1,7 +1,6 @@
 import { db } from "../firebase";
 import { v4 as uuid } from "uuid";
 
-
 /**
  * MeetService
  * 

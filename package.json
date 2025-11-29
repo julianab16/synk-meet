@@ -16,6 +16,8 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "firebase-admin": "^13.6.0",
+    "peer": "^1.0.2",
+    "peerjs": "^1.5.5",
     "socket.io": "^4.8.1",
     "uuid": "^13.0.0"
   },
@@ -24,6 +26,8 @@
     "@types/dotenv": "^6.1.1",
     "@types/express": "^4.17.25",
     "@types/node": "^24.10.1",
+    "@types/peerjs": "^0.0.30",
+    "@types/socket.io": "^3.0.1",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"
   }
