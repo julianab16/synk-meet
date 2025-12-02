@@ -94,6 +94,26 @@ app.use("*", (req, res) => {
 const PORT = process.env.PORT || 4000;
 
 
+/** -------------- WEBSOCKETS & PEERS ---------------- */
+
+
+/**
+ * Peer management for WebRTC connections.
+ * Stores active peer connections and their metadata.
+ */
+interface PeerInfo {
+  socketId: string;
+  peerId?: string;
+  meetingId?: string;
+  userId?: string;
+  mediaEnabled: {
+    audio: boolean;
+    video: boolean;
+  };
+}
+
+let peers: { [socketId: string]: PeerInfo } = {};
+
 /**
  * Socket.IO server instance for real-time communication.
  * Handles WebRTC signaling and peer management.
@@ -121,23 +141,25 @@ const peerServer = ExpressPeerServer(server, {
  */
 app.use('/peerjs', peerServer);
 
-
 /**
- * Peer management for WebRTC connections.
- * Stores active peer connections and their metadata.
+ * Limpieza automática: elimina sockets huérfanos
  */
-interface PeerInfo {
-  socketId: string;
-  peerId?: string;
-  meetingId?: string;
-  userId?: string;
-  mediaEnabled: {
-    audio: boolean;
-    video: boolean;
-  };
-}
+setInterval(() => {
+  const now = Date.now();
+  for (const id in peers) {
+    const socket = io.sockets.sockets.get(id);
 
-let peers: { [socketId: string]: PeerInfo } = {};
+    // Si no existe el socket → limpiarlo
+    if (!socket) {
+      console.log("🧹 Cleaning ghost peer:", id);
+      delete peers[id];
+      continue;
+    }
+  }
+}, 30000); // cada 30 segundos
+
+
+
 
 /**
  * Socket.IO connection handler for real-time signaling.
@@ -145,6 +167,21 @@ let peers: { [socketId: string]: PeerInfo } = {};
  */
 io.on("connection", (socket) => {
   console.log(`📞 Socket connected: ${socket.id}`);
+
+  // 👉 Esto sí es válido: evento de desconexión DEL SOCKET
+  socket.on("disconnect", () => {
+    const info = peers[socket.id];
+
+    if (info?.meetingId) {
+      socket.to(info.meetingId).emit("user-left", {
+        socketId: socket.id,
+        userId: info.userId,
+        peerId: info.peerId,
+      });
+    }
+    delete peers[socket.id];
+    console.log(`📴 User disconnected: ${socket.id}`);
+  });
 
   /**
    * Handle user joining a meeting room.
@@ -173,7 +210,7 @@ io.on("connection", (socket) => {
     });
 
     // Send existing peers to new user
-    const meetingPeers = Object.values(peers).filter(p => p.meetingId === meetingId && p.socketId !== socket.id);
+    const meetingPeers = Object.values(peers).filter(p => p.meetingId === meetingId && p.socketId !== socket.id).slice(0, 20);
     socket.emit("existing-peers", meetingPeers.map(p => ({
       userId: p.userId,
       peerId: p.peerId,
